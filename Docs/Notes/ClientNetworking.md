@@ -131,6 +131,24 @@ void HandleLoginResponse(Packet* packet);
    - Complete world connection
 ```
 
+## Chat Packet 0x95 (World)
+
+Observed from live client traffic (MSB Huffman, null-terminated):
+
+```
+payload bits (after msg id 0x95):
+  u32c senderId
+  u8c  fieldA (seen value: 1)
+  u32c fieldB (seen value: 469762048)
+  1 bit flag
+  pad to next byte boundary (seen: 4 bits)
+  huffman string (MSB), null-terminated
+```
+
+Notes:
+- String decode uses the runtime Huffman table (`Docs/Notes/huffman_table_runtime.json`).
+- Current decoder computes the Huffman start from the compressed fields + padding.
+
 ## Related Classes
 
 - `FoMClientNetworking` - Game-specific extension

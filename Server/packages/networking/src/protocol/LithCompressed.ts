@@ -5,7 +5,7 @@
  * Uses LSB BitStreamWriter for game layer serialization.
  */
 
-import { LithPacketWrite } from '../bindings/lithnet';
+import { LithPacketRead, LithPacketWrite } from '../bindings/lithnet';
 
 const clampU32 = (value: number): number => value >>> 0;
 
@@ -49,6 +49,38 @@ export const writeCompressedUInt = (
 };
 
 /**
+ * Read a compressed unsigned integer using RakNet compression scheme
+ * @param reader LSB BitStreamReader
+ * @param byteCount Number of bytes (1-4)
+ */
+export const readCompressedUInt = (
+    reader: LithPacketRead,
+    byteCount: number,
+): number => {
+    const bytes = Math.max(1, Math.min(4, byteCount));
+
+    for (let i = bytes - 1; i >= 1; i -= 1) {
+        const isZero = reader.readBits(1) === 1;
+        if (isZero) {
+            continue;
+        }
+
+        let value = 0;
+        for (let j = i; j >= 0; j -= 1) {
+            const b = reader.readBits(8) & 0xff;
+            value |= b << (j * 8);
+        }
+        return value >>> 0;
+    }
+
+    const useNibble = reader.readBits(1) === 1;
+    if (useNibble) {
+        return (reader.readBits(4) & 0x0f) >>> 0;
+    }
+    return (reader.readBits(8) & 0xff) >>> 0;
+};
+
+/**
  * Write compressed u8 (1 byte)
  */
 export const writeU8c = (writer: LithPacketWrite, value: number): void => {
@@ -68,6 +100,21 @@ export const writeU16c = (writer: LithPacketWrite, value: number): void => {
 export const writeU32c = (writer: LithPacketWrite, value: number): void => {
     writeCompressedUInt(writer, clampU32(value), 4);
 };
+
+/**
+ * Read compressed u8 (1 byte)
+ */
+export const readU8c = (reader: LithPacketRead): number => readCompressedUInt(reader, 1);
+
+/**
+ * Read compressed u16 (2 bytes)
+ */
+export const readU16c = (reader: LithPacketRead): number => readCompressedUInt(reader, 2);
+
+/**
+ * Read compressed u32 (4 bytes)
+ */
+export const readU32c = (reader: LithPacketRead): number => readCompressedUInt(reader, 4);
 
 /**
  * Write a list with u16 count prefix and u32 compressed entries

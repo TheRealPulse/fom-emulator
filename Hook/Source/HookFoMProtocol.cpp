@@ -2,12 +2,15 @@
 #include "HookFoMProtocol.h"
 #include "HookDecode.h"
 #include "HookLogging.h"
+#include "HookState.h"
 #include <string>
+#include <cctype>
 #include <intrin.h>
 
 using FNetSendToFn = int (__fastcall *)(void* ThisPtr, void* Edx, SOCKET Socket, char* Buffer, int Length, int Ip, int Port);
 using FNetSendFn = int (__fastcall *)(void* ThisPtr, void* Edx, char* Buffer, int Length);
 using FNetRecvFn = int (__fastcall *)(void* ThisPtr, void* Edx, char* Buffer, int Length);
+using FBitStreamWriteHuffmanStringFn = int (__thiscall *)(void* ThisPtr, const char* Text, int MaxLen);
 using FHuffmanGenFn = int (__thiscall *)(void* ThisPtr, void* FreqTable);
 using FHuffmanEncodeFn = void* (__thiscall *)(void* ThisPtr, int a2, unsigned int a3, void* a4);
 using FFomLogPrintfFn = void* (__cdecl *)(const char* Format, ...);
@@ -15,16 +18,19 @@ using FFomLogPrintfFn = void* (__cdecl *)(const char* Format, ...);
 static FNetSendToFn NetSendToFn = nullptr;
 static FNetSendFn NetSendFn = nullptr;
 static FNetRecvFn NetRecvFn = nullptr;
+static FBitStreamWriteHuffmanStringFn BitStreamWriteHuffmanStringFn = nullptr;
 static FHuffmanGenFn HuffmanGenFn = nullptr;
 static FHuffmanEncodeFn HuffmanEncodeFn = nullptr;
 static FFomLogPrintfFn FomLogPrintfFn = nullptr;
 
 static volatile LONG FoMHooksInstalled = 0;
+static volatile LONG HuffmanWriteGuard = 0;
 // Huffman hook path disabled; runtime table lives on server.
 
 static int __fastcall HookNetSendTo(void* ThisPtr, void* Edx, SOCKET Socket, char* Buffer, int Length, int Ip, int Port);
 static int __fastcall HookNetSend(void* ThisPtr, void* Edx, char* Buffer, int Length);
 static int __fastcall HookNetRecv(void* ThisPtr, void* Edx, char* Buffer, int Length);
+static int __fastcall HookBitStreamWriteHuffmanString(void* ThisPtr, void* Edx, const char* Text, int MaxLen);
 static int __fastcall HookHuffmanGenerate(void* ThisPtr, void* Edx, void* FreqTable);
 static void* __fastcall HookHuffmanEncode(void* ThisPtr, void* Edx, int a2, unsigned int a3, void* a4);
 
@@ -198,6 +204,59 @@ static bool ExtractEmbeddedBitStream(const void* StreamBase, const uint8_t** Out
     return true;
 }
 
+static void LogHuffmanString(const char* Text, int MaxLen)
+{
+    if (!Text || MaxLen <= 0)
+    {
+        return;
+    }
+    const int Limit = MaxLen > 128 ? 128 : MaxLen;
+    char Buffer[260] = {0};
+    int Length = 0;
+    __try
+    {
+        for (; Length < Limit; ++Length)
+        {
+            char c = Text[Length];
+            if (c == '\0')
+            {
+                break;
+            }
+            Buffer[Length] = c;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return;
+    }
+    if (Length <= 0)
+    {
+        return;
+    }
+    int printable = 0;
+    for (int i = 0; i < Length; ++i)
+    {
+        if (std::isprint(static_cast<unsigned char>(Buffer[i])))
+        {
+            printable++;
+        }
+        else
+        {
+            Buffer[i] = '.';
+        }
+    }
+    if (printable < Length / 2)
+    {
+        return;
+    }
+    if (Length > 64)
+    {
+        return;
+    }
+    Buffer[Length] = '\0';
+    LOG("[Huffman] WriteString len=%d max=%d text=\"%s\"", Length, MaxLen, Buffer);
+}
+
 static void DumpHuffmanTable(const void* TreePtr)
 {
     if (!TreePtr)
@@ -260,6 +319,17 @@ static void* __fastcall HookHuffmanEncode(void* ThisPtr, void* Edx, int a2, unsi
 {
     (void)Edx;
     return HuffmanEncodeFn ? HuffmanEncodeFn(ThisPtr, a2, a3, a4) : nullptr;
+}
+
+static int __fastcall HookBitStreamWriteHuffmanString(void* ThisPtr, void* Edx, const char* Text, int MaxLen)
+{
+    (void)Edx;
+    if (InterlockedCompareExchange(&HuffmanWriteGuard, 1, 0) == 0)
+    {
+        LogHuffmanString(Text, MaxLen);
+        InterlockedExchange(&HuffmanWriteGuard, 0);
+    }
+    return BitStreamWriteHuffmanStringFn ? BitStreamWriteHuffmanStringFn(ThisPtr, Text, MaxLen) : 0;
 }
 
 static void ClientLogDebugShort(const char* Message);
@@ -365,6 +435,12 @@ static void LogIpPort(const char* Tag, const void* Buffer, int Length, int Ip, i
 static int __fastcall HookNetSendTo(void* ThisPtr, void* Edx, SOCKET Socket, char* Buffer, int Length, int Ip, int Port)
 {
     int Result = NetSendToFn ? NetSendToFn(ThisPtr, Edx, Socket, Buffer, Length, Ip, Port) : 0;
+    if (Length > 0 && ShouldCaptureNetwork())
+    {
+        GSendCount += 1;
+        GSendBytes += static_cast<uint64_t>(Length);
+        GLastSend = Length;
+    }
     if (Length > 0 && ShouldCaptureNetwork() && GConfig.bLogSend)
     {
         LogIpPort("Rak][Net_SendTo", Buffer, Length, Ip, Port);
@@ -376,6 +452,12 @@ static int __fastcall HookNetSendTo(void* ThisPtr, void* Edx, SOCKET Socket, cha
 static int __fastcall HookNetSend(void* ThisPtr, void* Edx, char* Buffer, int Length)
 {
     int Result = NetSendFn ? NetSendFn(ThisPtr, Edx, Buffer, Length) : 0;
+    if (Length > 0 && ShouldCaptureNetwork())
+    {
+        GSendCount += 1;
+        GSendBytes += static_cast<uint64_t>(Length);
+        GLastSend = Length;
+    }
     if (Length > 0 && ShouldCaptureNetwork() && GConfig.bLogSend)
     {
         LogHex("Rak][Net_Send", Buffer, Length, nullptr, 0);
@@ -387,6 +469,12 @@ static int __fastcall HookNetSend(void* ThisPtr, void* Edx, char* Buffer, int Le
 static int __fastcall HookNetRecv(void* ThisPtr, void* Edx, char* Buffer, int Length)
 {
     int Result = NetRecvFn ? NetRecvFn(ThisPtr, Edx, Buffer, Length) : 0;
+    if (Result > 0 && ShouldCaptureNetwork())
+    {
+        GRecvCount += 1;
+        GRecvBytes += static_cast<uint64_t>(Result);
+        GLastRecv = Result;
+    }
     if (Result > 0 && ShouldCaptureNetwork() && GConfig.bLogRecv)
     {
         LogHex("Rak][Net_Recv", Buffer, Result, nullptr, 0);
@@ -411,6 +499,10 @@ static void InstallFoMProtocolHooks()
     const uint8_t NetSendToPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18};
     const uint8_t NetSendPrologue[7] = {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC};
     const uint8_t NetRecvPrologue[7] = {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC};
+    const uint8_t BitStreamWriteHuffmanPrologue[16] = {
+        0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xEF, 0xBF,
+        0xE0, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00,
+    };
 
     const bool SendToOk = InstallDetourChecked("Net_SendTo", 0x000E5E30, sizeof(NetSendToPrologue),
                                                NetSendToPrologue, reinterpret_cast<void*>(&HookNetSendTo),
@@ -421,10 +513,12 @@ static void InstallFoMProtocolHooks()
     const bool RecvOk = InstallDetourChecked("Net_Recv", 0x00123120, sizeof(NetRecvPrologue),
                                              NetRecvPrologue, reinterpret_cast<void*>(&HookNetRecv),
                                              reinterpret_cast<void**>(&NetRecvFn));
-    LOG("FoM protocol hooks: sendto=%s send=%s recv=%s",
+    const bool HuffmanOk = false;
+    LOG("FoM protocol hooks: sendto=%s send=%s recv=%s huffstr=%s (disabled)",
         SendToOk ? "ok" : "fail",
         SendOk ? "ok" : "fail",
-        RecvOk ? "ok" : "fail");
+        RecvOk ? "ok" : "fail",
+        HuffmanOk ? "ok" : "fail");
 }
 
 void EnsureFoMProtocolHooks()

@@ -11,25 +11,13 @@
 import { NativeBitStream } from '@openfom/networking';
 import { RakNetMessageId } from './shared';
 import { Packet } from './base';
-import {
-    ProfileA,
-    ProfileB,
-    ProfileC,
-    ProfileCData,
-    ProfileD,
-} from './structs/profile';
-import {
-    CompactVec3,
-    EntryGBlock,
-    TableIBlock,
-    FinalBlock,
-} from './structs/common';
-import { StringBundleE } from './structs/world';
+import { ProfileA, ProfileB, ProfileC, ProfileD, type ProfileCData } from './structs/profile';
+import { CompactVec3, EntryGBlock, TableIBlock, FinalBlock } from './structs/common';
 
 export interface IdRegisterClientReturnData {
     worldId: number;
-    playerId: number;
-    flags: number;
+    worldInst: number;
+    returnCode: number;
     appearance?: ProfileCData;
 }
 
@@ -37,36 +25,16 @@ export class IdRegisterClientReturnPacket extends Packet {
     static RAKNET_ID = RakNetMessageId.ID_REGISTER_CLIENT_RETURN;
 
     worldId: number;
-    playerId: number;
-    flags: number;
-    
-    profileA: ProfileA;
-    profileB: ProfileB;
-    profileC: ProfileC;
-    profileD: ProfileD;
-    stringBundle: StringBundleE;
-    position1: CompactVec3;
-    position2: CompactVec3;
-    entryGBlock: EntryGBlock;
-    tableIBlock: TableIBlock;
-    finalBlock: FinalBlock;
+    worldInst: number;
+    returnCode: number;
+    appearance: ProfileCData;
 
     constructor(data: IdRegisterClientReturnData) {
         super();
         this.worldId = data.worldId;
-        this.playerId = data.playerId;
-        this.flags = data.flags;
-        
-        this.profileA = ProfileA.empty();
-        this.profileB = ProfileB.empty();
-        this.profileC = data.appearance ? new ProfileC(data.appearance) : ProfileC.defaultMale();
-        this.profileD = ProfileD.empty();
-        this.stringBundle = StringBundleE.empty();
-        this.position1 = new CompactVec3();
-        this.position2 = new CompactVec3();
-        this.entryGBlock = EntryGBlock.empty();
-        this.tableIBlock = TableIBlock.empty();
-        this.finalBlock = FinalBlock.empty();
+        this.worldInst = data.worldInst;
+        this.returnCode = data.returnCode;
+        this.appearance = data.appearance ?? {};
     }
 
     encode(): Buffer {
@@ -74,36 +42,36 @@ export class IdRegisterClientReturnPacket extends Packet {
         try {
             bs.writeU8(RakNetMessageId.ID_REGISTER_CLIENT_RETURN);
             bs.writeCompressedU8(this.worldId);
-            bs.writeCompressedU32(this.playerId);
-            bs.writeCompressedU8(this.flags);
-            
-            bs.writeStruct(this.profileA);
-            bs.writeStruct(this.profileB);
-            bs.writeStruct(this.profileC);
-            bs.writeStruct(this.profileD);
-            bs.writeStruct(this.stringBundle);
-            
+            bs.writeCompressedU32(this.worldInst);
+            bs.writeCompressedU8(this.returnCode);
+
+            ProfileA.empty().encode(bs);
+            ProfileB.empty().encode(bs);
+            new ProfileC({ ...this.appearance, hasAbilities: false }).encode(bs);
+            new ProfileD(buildDefaultProfileD()).encode(bs);
+            this.writeStringBundleE(bs);
+
             bs.writeCompressedU8(3);
             bs.writeCompressedU8(0);
             bs.writeCompressedU16(0);
-            
+
             bs.writeBit(true);
-            bs.writeStruct(this.position1);
-            
+            new CompactVec3(0, 0, 0, 0).encode(bs);
+
             bs.writeCompressedU32(0);
             bs.writeCompressedU32(0);
-            
+
             bs.writeBit(false);
             bs.writeCompressedU16(0);
-            
-            bs.writeStruct(this.entryGBlock);
-            bs.writeCompressedString('');
-            bs.writeStruct(this.tableIBlock);
-            bs.writeStruct(this.position2);
-            
+
+            EntryGBlock.empty().encode(bs);
+            bs.writeCompressedString('', 2048);
+            TableIBlock.empty().encode(bs);
+            new CompactVec3(0, 0, 0, 0).encode(bs);
+
             bs.writeBit(false);
-            bs.writeStruct(this.finalBlock);
-            
+            FinalBlock.empty().encode(bs);
+
             return bs.getData();
         } finally {
             bs.destroy();
@@ -115,6 +83,41 @@ export class IdRegisterClientReturnPacket extends Packet {
     }
 
     toString(): string {
-        return `IdRegisterClientReturnPacket { worldId: ${this.worldId}, playerId: ${this.playerId}, flags: ${this.flags} }`;
+        return `IdRegisterClientReturnPacket { worldId: ${this.worldId}, worldInst: ${this.worldInst}, returnCode: ${this.returnCode} }`;
     }
+
+    private writeStringBundleE(bs: NativeBitStream): void {
+        bs.writeCompressedU32(0);
+        bs.writeBit(false);
+
+        bs.writeCompressedString('', 2048);
+        bs.writeCompressedString('', 2048);
+        bs.writeCompressedString('', 2048);
+        bs.writeCompressedString('', 2048);
+    }
+}
+
+function buildDefaultProfileD(): number[] {
+    const stats = Array(53).fill(0);
+    // Seed minimal non-zero vitals to avoid "dead" client state.
+    stats[0x00] = 1000; // Health (100%)
+    stats[0x01] = 1000; // Stamina (100%)
+    stats[0x02] = 1000; // Bio Energy (100%)
+    stats[0x03] = 1000; // Aura (100%)
+    // Basic mobility/regen so the client doesn't feel "stunned".
+    stats[0x0b] = 1000; // Agility (100%)
+    stats[0x16] = 100;  // Health Regeneration (10%)
+    stats[0x17] = 100;  // Stamina Regeneration (10%)
+    stats[0x18] = 100;  // Bio Regeneration (10%)
+    stats[0x19] = 100;  // Aura Regeneration (10%)
+    stats[0x1e] = 0;    // Health Drain
+    stats[0x1f] = 0;    // Stamina Drain
+    stats[0x20] = 0;    // Bio Energy Drain
+    stats[0x21] = 0;    // Aura Drain
+    stats[0x27] = 0;    // Weight
+    stats[0x28] = 1000; // Jump Velocity Multiplier (100%)
+    stats[0x29] = 1000; // Fall Damage Multiplier (100%)
+    stats[0x2d] = 1000; // Sprint Speed Multiplier (100%)
+    stats[0x2e] = 1000; // Max Stamina (100%)
+    return stats;
 }

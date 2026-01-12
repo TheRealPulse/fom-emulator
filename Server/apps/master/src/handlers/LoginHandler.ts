@@ -25,6 +25,7 @@ import {
 } from '@openfom/packets';
 import { Connection, LoginPhase } from '../network/Connection';
 import { info as logInfo } from '@openfom/utils';
+import { WORLD_TABLE } from '../world/WorldRegistry';
 
 export interface LoginHandlerConfig {
     serverMode: 'master' | 'world';
@@ -268,11 +269,17 @@ export class LoginHandler {
 
         const defaultWorldId = this.config.worldSelectWorldId ?? 1;
         const currentWorldId = this.config.worldSelectWorldId ?? 1;
+        const worldIDs = WORLD_TABLE.filter((world) => world.folder).map((world) => world.id);
+        if (worldIDs.length === 0) {
+            worldIDs.push(defaultWorldId);
+        } else if (!worldIDs.includes(defaultWorldId)) {
+            worldIDs.unshift(defaultWorldId);
+        }
         const loginReturn = new IdLoginReturnPacket({
             status,
             playerId,
             clientVersion: loginClientVersion,
-            worldIDs: [1],
+            worldIDs,
             defaultWorldId,
             currentWorldId,
         }).encode();

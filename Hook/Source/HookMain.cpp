@@ -25,6 +25,7 @@ static DWORD WINAPI InitThread(LPVOID Parameter)
 
     InitConsole();
     ValidateConfig();
+    OverlayStartup();
     char ModulePath[MAX_PATH] = {0};
     GetModuleFileNameA(reinterpret_cast<HMODULE>(&__ImageBase), ModulePath, MAX_PATH);
     LOG("[Hook] DInput8 proxy loaded (pid=%lu)", GetCurrentProcessId());

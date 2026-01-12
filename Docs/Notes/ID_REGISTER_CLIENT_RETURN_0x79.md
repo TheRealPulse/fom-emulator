@@ -25,6 +25,8 @@ This is a large, complex packet sent from World Server → Client in response to
 | 0x434 (1076) | u32c | playerId | Compressed u32 |
 | 0x438 (1080) | u8c | flags | Compressed u8 |
 
+**Emulator note**: Sending `playerId` in the 0x434 u32c slot is required for the retail client to accept world registration; using `worldInst` here causes the client to loop on “register client on world server …”.
+
 ### ProfileA Block (offset 0x43C / 1084)
 Written by `sub_100EAAF0` → calls 5 sub-writers:
 1. `sub_100CA710` (this+0, bs) - Main profile header + array

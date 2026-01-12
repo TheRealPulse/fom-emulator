@@ -80,6 +80,14 @@ if "%PORT%"=="" (
 
 set SERVER_MODE=%MODE%
 
+if not defined WORLD_ID (
+  if exist "%CD%\\apps\\master\\.env" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%CD%\\apps\\master\\.env") do (
+      if /I "%%A"=="WORLD_ID" if not "%%B"=="" set WORLD_ID=%%B
+    )
+  )
+)
+
 if not defined FOM_INI (
   if /I "%MODE%"=="world" (
     set FOM_INI=%CD%\\apps\\master\\fom_world.ini
