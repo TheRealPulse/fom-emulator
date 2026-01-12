@@ -330,8 +330,8 @@ function handleWorldLogin(packet: IdWorldLoginPacket, address: RakSystemAddress)
     }
 
     conn.playerId = playerId || 1;
-    conn.worldId = worldId || 1;
-    conn.worldInst = worldInst || 0;
+    conn.worldId = worldId || config.worldId;
+    conn.worldInst = worldInst || config.worldInst;
     conn.authenticated = true;
 
     logInfo(`[World] Updated connection: playerId=${conn.playerId} worldId=${conn.worldId}`);
@@ -357,7 +357,7 @@ function handleRegisterClient(packet: IdRegisterClientPacket, address: RakSystem
 
     const response = new IdRegisterClientReturnPacket({
         worldId: conn.worldId,
-        worldInst: conn.playerId, // Client expects playerId in the 0x79 header slot.
+        playerId: conn.playerId,
         returnCode: 1,
     });
     
@@ -381,8 +381,8 @@ function handleNewConnection(address: RakSystemAddress): void {
         address,
         key,
         playerId: 1,
-        worldId: 1,
-        worldInst: 0,
+        worldId: config.worldId,
+        worldInst: config.worldInst,
         authenticated: false,
         registered: false,
         worldTimeOrigin: Date.now(),

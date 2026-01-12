@@ -5,6 +5,7 @@
 #include "HookFoMProtocol.h"
 #include "HookItemOverrides.h"
 #include "HookLithTech.h"
+#include "HookObjectLTO.h"
 #include "HookOverlay.h"
 #include "HookRakNet.h"
 #include "HookState.h"
@@ -34,6 +35,7 @@ static DWORD WINAPI InitThread(LPVOID Parameter)
     EnsureD3D9Hooks();
     EnsureFoMProtocolHooks();
     InstallLithTechMessageHooks();
+    EnsureObjectLtoHooks();
     InstallRakNetDetours();
 
     return 0;

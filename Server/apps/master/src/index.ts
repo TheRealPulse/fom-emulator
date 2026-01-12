@@ -21,6 +21,7 @@ import {
     NativeBitStream,
     readU32c,
 } from '@openfom/networking';
+import { RakNetMessageId } from '@openfom/packets';
 
 import { configureLogger, debug as logDebug, error as logError, info as logInfo, warn as logWarn } from '@openfom/utils';
 import { loadRuntimeConfig } from './config';
@@ -110,6 +111,7 @@ const loginHandler = new LoginHandler({
     acceptLoginAuthWithoutUser: config.acceptLoginAuthWithoutUser,
     resendDuplicateLogin6D: config.resendDuplicateLogin6D,
     loginClientVersion: config.loginClientVersion,
+    loginResetDelayMs: config.loginResetDelayMs,
     worldSelectWorldId: config.worldSelectWorldId,
     worldSelectWorldInst: config.worldSelectWorldInst,
     worldSelectPlayerId: config.worldSelectPlayerId,
@@ -585,6 +587,51 @@ function hexPreview(data: Buffer, maxBytes: number = 64): string {
 }
 
 // =============================================================================
+// Packet Unwrap Helpers (RakNet timestamp/user packet)
+// =============================================================================
+
+function hexDump(buffer: Buffer, maxBytes = 64): { hex: string; truncated: boolean } {
+    const truncated = buffer.length > maxBytes;
+    const view = truncated ? buffer.subarray(0, maxBytes) : buffer;
+    const hex = Array.from(view)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join(' ');
+    return { hex, truncated };
+}
+
+function unwrapPacketPayload(data: Buffer): {
+    outerId: number;
+    innerId: number | null;
+    innerPacket: Buffer | null;
+    lithId: number | null;
+    lithPayload: Buffer | null;
+} {
+    const outerId = data[0] ?? 0;
+    let innerId: number | null = null;
+    let innerPacket: Buffer | null = null;
+    let lithId: number | null = null;
+    let lithPayload: Buffer | null = null;
+
+    if (outerId === RakNetMessageId.ID_TIMESTAMP) {
+        if (data.length >= 6) {
+            // RakNetTime is 32-bit unless __GET_TIME_64BIT is enabled.
+            innerPacket = data.subarray(5);
+            innerId = innerPacket[0] ?? null;
+        }
+    } else {
+        innerPacket = data;
+        innerId = outerId;
+    }
+
+    if (innerId === RakNetMessageId.ID_USER_PACKET_ENUM && innerPacket && innerPacket.length >= 2) {
+        lithId = innerPacket[1];
+        lithPayload = innerPacket.subarray(2);
+    }
+
+    return { outerId, innerId, innerPacket, lithId, lithPayload };
+}
+
+// =============================================================================
 // Main Loop
 // =============================================================================
 
@@ -635,16 +682,23 @@ async function mainLoop() {
                 // Log unknown packets
                 if (config.debug || messageId >= 0x50) {  // Log game packets
                     const addr = addressToString(packet.systemAddress);
+                    const unwrap = unwrapPacketPayload(packet.data);
                     logInfo(
                         `[Server] Unhandled 0x${messageId.toString(16).padStart(2, '0')} from ${addr} (${packet.length} bytes)`,
                     );
-                    // Hex dump for small packets
-                    if (packet.length <= 32) {
-                        const hex = Array.from(packet.data)
-                            .map((b) => b.toString(16).padStart(2, '0'))
-                            .join(' ');
-                        logInfo(`         ${hex}`);
+                    if (unwrap.innerPacket && unwrap.outerId === RakNetMessageId.ID_TIMESTAMP) {
+                        logInfo(
+                            `[Server] -> ID_TIMESTAMP innerId=0x${(unwrap.innerId ?? 0).toString(16).padStart(2, '0')} innerLen=${unwrap.innerPacket.length}`,
+                        );
                     }
+                    if (unwrap.lithId !== null && unwrap.lithPayload) {
+                        logInfo(
+                            `[Server] -> USER_PACKET lithId=0x${unwrap.lithId.toString(16).padStart(2, '0')} lithLen=${unwrap.lithPayload.length}`,
+                        );
+                    }
+                    const dumpTarget = unwrap.lithPayload ?? unwrap.innerPacket ?? packet.data;
+                    const { hex, truncated } = hexDump(dumpTarget, 96);
+                    logInfo(`         ${hex}${truncated ? ' ...' : ''}`);
                 }
             }
 

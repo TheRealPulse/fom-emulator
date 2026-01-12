@@ -8,33 +8,107 @@
  * See: Docs/Notes/ID_REGISTER_CLIENT_RETURN_0x79.md
  */
 
-import { NativeBitStream } from '@openfom/networking';
+import { NativeBitStream, writeLithHuffmanString } from '@openfom/networking';
 import { RakNetMessageId } from './shared';
 import { Packet } from './base';
-import { ProfileA, ProfileB, ProfileC, ProfileD, type ProfileCData } from './structs/profile';
-import { CompactVec3, EntryGBlock, TableIBlock, FinalBlock } from './structs/common';
+import {
+    ProfileA,
+    ProfileB,
+    ProfileC,
+    ProfileCData,
+    ProfileD,
+} from './structs/profile';
+import {
+    CompactVec3,
+    EntryGBlock,
+    TableIBlock,
+    ListKBlock,
+} from './structs/common';
+import { StringBundleE } from './structs/world';
+
+const MAX_BLOB_BITS = 2048;
+const MAX_BLOB_BYTES = MAX_BLOB_BITS / 8;
+
+const writeStringBundleE = (bs: NativeBitStream, bundle: StringBundleE): void => {
+    bs.writeCompressedU32(bundle.bundleId >>> 0);
+    bs.writeBit(Boolean(bundle.flag));
+
+    // LT string bundle uses u32c bit-length + Huffman bits (max 2048 bits per field).
+    writeLithHuffmanString(bs, bundle.playerName?.value ?? '', MAX_BLOB_BITS);
+    writeLithHuffmanString(bs, bundle.avatarData?.value ?? '', MAX_BLOB_BITS);
+    writeLithHuffmanString(bs, bundle.factionOrTitle?.value ?? '', MAX_BLOB_BITS);
+    writeLithHuffmanString(bs, bundle.unknownString?.value ?? '', MAX_BLOB_BITS);
+};
+
+const writeBlobH = (bs: NativeBitStream, blob: string): void => {
+    // Same LT Huffman reader as StringBundleE (u32c bit-length + Huffman bits).
+    writeLithHuffmanString(bs, blob ?? '', MAX_BLOB_BITS);
+};
 
 export interface IdRegisterClientReturnData {
     worldId: number;
-    worldInst: number;
+    playerId: number;
     returnCode: number;
     appearance?: ProfileCData;
+    profileEntries?: ProfileCData[];
 }
 
 export class IdRegisterClientReturnPacket extends Packet {
     static RAKNET_ID = RakNetMessageId.ID_REGISTER_CLIENT_RETURN;
 
     worldId: number;
-    worldInst: number;
+    playerId: number;
     returnCode: number;
-    appearance: ProfileCData;
+    
+    profileA: ProfileA;
+    profileB: ProfileB;
+    profileC: ProfileC;
+    profileD: ProfileD;
+    stringBundle: StringBundleE;
+    flagA: number;
+    flagB: number;
+    profileEntries: ProfileC[];
+    baseSpawnEnabled: boolean;
+    position1: CompactVec3;
+    currencyA: number;
+    currencyB: number;
+    flag3: boolean;
+    valC: number;
+    field18916: number;
+    position2: CompactVec3;
+    entryGBlock: EntryGBlock;
+    tableIBlock: TableIBlock;
+    blobH: string;
+    hasOverrideSpawn: boolean;
+    listKBlock: ListKBlock;
 
     constructor(data: IdRegisterClientReturnData) {
         super();
         this.worldId = data.worldId;
-        this.worldInst = data.worldInst;
+        this.playerId = data.playerId;
         this.returnCode = data.returnCode;
-        this.appearance = data.appearance ?? {};
+        
+        this.profileA = ProfileA.empty();
+        this.profileB = ProfileB.empty();
+        this.profileC = data.appearance ? new ProfileC(data.appearance) : ProfileC.defaultMale();
+        this.profileD = ProfileD.empty();
+        this.stringBundle = StringBundleE.empty();
+        this.flagA = 3;
+        this.flagB = 0;
+        this.profileEntries = (data.profileEntries ?? []).map(entry => new ProfileC(entry));
+        this.baseSpawnEnabled = true;
+        this.position1 = new CompactVec3();
+        this.currencyA = 0;
+        this.currencyB = 0;
+        this.flag3 = false;
+        this.valC = 0;
+        this.field18916 = 0;
+        this.position2 = new CompactVec3();
+        this.entryGBlock = EntryGBlock.empty();
+        this.tableIBlock = TableIBlock.empty();
+        this.blobH = '';
+        this.hasOverrideSpawn = false;
+        this.listKBlock = ListKBlock.empty();
     }
 
     encode(): Buffer {
@@ -42,36 +116,40 @@ export class IdRegisterClientReturnPacket extends Packet {
         try {
             bs.writeU8(RakNetMessageId.ID_REGISTER_CLIENT_RETURN);
             bs.writeCompressedU8(this.worldId);
-            bs.writeCompressedU32(this.worldInst);
+            bs.writeCompressedU32(this.playerId);
             bs.writeCompressedU8(this.returnCode);
-
-            ProfileA.empty().encode(bs);
-            ProfileB.empty().encode(bs);
-            new ProfileC({ ...this.appearance, hasAbilities: false }).encode(bs);
-            new ProfileD(buildDefaultProfileD()).encode(bs);
-            this.writeStringBundleE(bs);
-
-            bs.writeCompressedU8(3);
-            bs.writeCompressedU8(0);
-            bs.writeCompressedU16(0);
-
-            bs.writeBit(true);
-            new CompactVec3(0, 0, 0, 0).encode(bs);
-
-            bs.writeCompressedU32(0);
-            bs.writeCompressedU32(0);
-
-            bs.writeBit(false);
-            bs.writeCompressedU16(0);
-
-            EntryGBlock.empty().encode(bs);
-            bs.writeCompressedString('', 2048);
-            TableIBlock.empty().encode(bs);
-            new CompactVec3(0, 0, 0, 0).encode(bs);
-
-            bs.writeBit(false);
-            FinalBlock.empty().encode(bs);
-
+            
+            bs.writeStruct(this.profileA);
+            bs.writeStruct(this.profileB);
+            bs.writeStruct(this.profileC);
+            bs.writeStruct(this.profileD);
+            writeStringBundleE(bs, this.stringBundle);
+            
+            bs.writeCompressedU8(this.flagA & 0xff);
+            bs.writeCompressedU8(this.flagB & 0xff);
+            bs.writeCompressedU16(this.profileEntries.length & 0xffff);
+            for (const entry of this.profileEntries) {
+                bs.writeStruct(entry);
+            }
+            
+            bs.writeBit(this.baseSpawnEnabled);
+            bs.writeStruct(this.position1);
+            
+            bs.writeCompressedU32(this.currencyA >>> 0);
+            bs.writeCompressedU32(this.currencyB >>> 0);
+            
+            bs.writeBit(this.flag3);
+            bs.writeCompressedU16(this.valC & 0xffff);
+            bs.writeCompressedU32(this.field18916 >>> 0);
+            
+            bs.writeStruct(this.entryGBlock);
+            writeBlobH(bs, this.blobH);
+            bs.writeStruct(this.tableIBlock);
+            bs.writeStruct(this.position2);
+            
+            bs.writeBit(this.hasOverrideSpawn);
+            bs.writeStruct(this.listKBlock);
+            
             return bs.getData();
         } finally {
             bs.destroy();
@@ -83,41 +161,6 @@ export class IdRegisterClientReturnPacket extends Packet {
     }
 
     toString(): string {
-        return `IdRegisterClientReturnPacket { worldId: ${this.worldId}, worldInst: ${this.worldInst}, returnCode: ${this.returnCode} }`;
+        return `IdRegisterClientReturnPacket { worldId: ${this.worldId}, playerId: ${this.playerId}, returnCode: ${this.returnCode} }`;
     }
-
-    private writeStringBundleE(bs: NativeBitStream): void {
-        bs.writeCompressedU32(0);
-        bs.writeBit(false);
-
-        bs.writeCompressedString('', 2048);
-        bs.writeCompressedString('', 2048);
-        bs.writeCompressedString('', 2048);
-        bs.writeCompressedString('', 2048);
-    }
-}
-
-function buildDefaultProfileD(): number[] {
-    const stats = Array(53).fill(0);
-    // Seed minimal non-zero vitals to avoid "dead" client state.
-    stats[0x00] = 1000; // Health (100%)
-    stats[0x01] = 1000; // Stamina (100%)
-    stats[0x02] = 1000; // Bio Energy (100%)
-    stats[0x03] = 1000; // Aura (100%)
-    // Basic mobility/regen so the client doesn't feel "stunned".
-    stats[0x0b] = 1000; // Agility (100%)
-    stats[0x16] = 100;  // Health Regeneration (10%)
-    stats[0x17] = 100;  // Stamina Regeneration (10%)
-    stats[0x18] = 100;  // Bio Regeneration (10%)
-    stats[0x19] = 100;  // Aura Regeneration (10%)
-    stats[0x1e] = 0;    // Health Drain
-    stats[0x1f] = 0;    // Stamina Drain
-    stats[0x20] = 0;    // Bio Energy Drain
-    stats[0x21] = 0;    // Aura Drain
-    stats[0x27] = 0;    // Weight
-    stats[0x28] = 1000; // Jump Velocity Multiplier (100%)
-    stats[0x29] = 1000; // Fall Damage Multiplier (100%)
-    stats[0x2d] = 1000; // Sprint Speed Multiplier (100%)
-    stats[0x2e] = 1000; // Max Stamina (100%)
-    return stats;
 }
